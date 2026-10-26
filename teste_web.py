@@ -1,15 +1,19 @@
 import json
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import mysql.connector
+from dotenv import load_dotenv
 
-# Ajuste usuario e senha se o MySQL for diferente
+load_dotenv()
+
 CONFIG = {
-    "host": "127.0.0.1",
-    "user": "root",
-    "password": "root",
-    "database": "bd_simulator",
+    "host": os.getenv("DB_HOST", "127.0.0.1"),
+    "port": int(os.getenv("DB_PORT", "3306")),
+    "user": os.getenv("DB_USER", "root"),
+    "password": os.getenv("DB_PASSWORD", "root"),
+    "database": os.getenv("DB_NAME", "bd_simulator"),
 }
 
 PORTA = 8000

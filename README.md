@@ -21,8 +21,9 @@ chama (`CALL`) stored procedures que leem o `information_schema` do MySQL.
    pip install -r requirements.txt
    ```
 
-3. **Conferir usuário e senha do MySQL** no início do `teste_web.py`
-   (padrão: `root` / `root`).
+3. **Configurar o acesso ao MySQL.** Copie `.env.example` para `.env` e
+   ajuste `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` e `DB_NAME` conforme
+   o seu MySQL (padrão: `root` / `root`).
 
 4. **Iniciar o servidor:**
 

@@ -18,7 +18,6 @@ BEGIN
            t.TABLE_TYPE AS tipo,
            t.ENGINE AS engine
     FROM information_schema.TABLES t
-    LEFT JOIN information_schema.ENGINES e ON e.ENGINE = t.ENGINE
     WHERE t.TABLE_SCHEMA = p_schema
     ORDER BY t.TABLE_NAME;
 END$$
