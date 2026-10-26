@@ -1,7 +1,7 @@
 # Simulador SGBD - consulta de metadados
 
-Aplicação web que mostra, para uma tabela escolhida, os relacionamentos
-(lado N e lado 1) e a estrutura das tabelas envolvidas. O Python apenas
+Aplicação web que lista os bancos (schemas), as tabelas de cada banco e a
+estrutura (colunas) de cada tabela. O Python apenas
 chama (`CALL`) stored procedures que leem o `information_schema` do MySQL.
 
 ## Requisitos
@@ -32,6 +32,6 @@ chama (`CALL`) stored procedures que leem o `information_schema` do MySQL.
    ```
 
 5. Abrir **http://127.0.0.1:8000** no navegador. Escolha o banco (schema) e
-   expanda uma tabela para ver os relacionamentos.
+   expanda uma tabela para ver as suas colunas.
 
 

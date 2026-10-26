@@ -39,14 +39,6 @@ PAGINA = """<!doctype html>
   th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: left; font-size: 0.9rem; }
   th { background: #f2f2f2; }
   h3 { font-size: 1rem; margin: 12px 0 4px; }
-  .bloco { border-left: 6px solid; border-radius: 4px; padding: 4px 12px; margin: 10px 0; }
-  .bloco h3 { margin-top: 4px; }
-  h4 { font-size: 0.9rem; margin: 10px 0 2px; }
-  .lado-n { border-color: #e8710a; background: #fff6ec; }
-  .lado-n h3 { color: #b35500; }
-  .lado-1 { border-color: #1a73e8; background: #eef4fe; }
-  .lado-1 h3 { color: #0b57b8; }
-  .bloco th { background: rgba(0,0,0,0.06); }
   .vazio { color: #777; font-style: italic; }
 </style>
 </head>
@@ -144,48 +136,12 @@ function criarItemTabela(schema, tabela, tipo) {
     try {
       const params = "?schema=" + encodeURIComponent(schema) +
                      "&tabela=" + encodeURIComponent(tabela);
-      const rel = await buscar("/api/relacionamentos" + params);
+      const estrutura = await buscar("/api/colunas" + params);
       conteudo.textContent = "";
-      const iPos = rel.colunas.indexOf("posicao");
-      const colsRel = rel.colunas.filter((_, i) => i !== iPos);
-      const semPos = l => l.filter((_, i) => i !== iPos);
-      const grupos = [
-        ["lado-n", "Lado N — esta tabela referencia (contém a chave estrangeira)",
-         "a tabela escolhida esta no lado N"],
-        ["lado-1", "Lado 1 — esta tabela é referenciada (outras tabelas apontam para ela)",
-         "a tabela escolhida esta no lado 1"],
-      ];
-      const estEscolhida = await buscar("/api/colunas" + params);
-      const hEst = document.createElement("h3");
-      hEst.textContent = "Tabela escolhida: " + schema + "." + tabela;
-      conteudo.appendChild(hEst);
-      conteudo.appendChild(montarTabela(estEscolhida.colunas, estEscolhida.linhas));
-      const iN = rel.colunas.indexOf("lado_n");
-      const i1 = rel.colunas.indexOf("lado_1");
-      for (const [classe, titulo, chave] of grupos) {
-        const bloco = document.createElement("div");
-        bloco.className = "bloco " + classe;
-        const h = document.createElement("h3");
-        h.textContent = titulo;
-        bloco.appendChild(h);
-        const brutas = rel.linhas.filter(l => l[iPos] === chave);
-        bloco.appendChild(montarTabela(colsRel, brutas.map(semPos)));
-        // estrutura apenas das tabelas relacionadas (sem repetir a escolhida)
-        const relacionadas = new Set();
-        brutas.forEach(l => [l[iN], l[i1]].forEach(n => {
-          if (n !== schema + "." + tabela) relacionadas.add(n);
-        }));
-        for (const nome of relacionadas) {
-          const [sch, ...resto] = nome.split(".");
-          const h4 = document.createElement("h4");
-          h4.textContent = "Tabela relacionada: " + nome;
-          bloco.appendChild(h4);
-          const colunas = await buscar("/api/colunas?schema=" + encodeURIComponent(sch) +
-                                       "&tabela=" + encodeURIComponent(resto.join(".")));
-          bloco.appendChild(montarTabela(colunas.colunas, colunas.linhas));
-        }
-        conteudo.appendChild(bloco);
-      }
+      const h = document.createElement("h3");
+      h.textContent = "Estrutura de " + schema + "." + tabela;
+      conteudo.appendChild(h);
+      conteudo.appendChild(montarTabela(estrutura.colunas, estrutura.linhas));
     } catch (erro) {
       carregado = false;
       conteudo.className = "erro";
@@ -227,7 +183,7 @@ carregarSchemas();
 """
 
 
-def chamar(procedure, *args):
+def call(procedure, *args):
     conn = mysql.connector.connect(**CONFIG)
     try:
         cursor = conn.cursor()
@@ -252,26 +208,16 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/":
                 self._enviar(200, "text/html; charset=utf-8", PAGINA.encode("utf-8"))
             elif url.path == "/api/schemas":
-                colunas, linhas = chamar("sp_listar_schemas")
+                colunas, linhas = call("sp_listar_schemas")
                 self._json({"colunas": colunas, "linhas": linhas})
             elif url.path == "/api/tabelas":
                 schema = query.get("schema", [""])[0]
-                colunas, linhas = chamar("sp_listar_tabelas", schema)
-                self._json({"colunas": colunas, "linhas": linhas})
-            elif url.path == "/api/relacionamentos":
-                schema = query.get("schema", [""])[0]
-                tabela = query.get("tabela", [""])[0]
-                colunas, linhas = chamar("sp_cardinalidade", schema, tabela)
+                colunas, linhas = call("sp_listar_tabelas", schema)
                 self._json({"colunas": colunas, "linhas": linhas})
             elif url.path == "/api/colunas":
                 schema = query.get("schema", [""])[0]
                 tabela = query.get("tabela", [""])[0]
-                colunas, linhas = chamar("sp_colunas_tabela", schema, tabela)
-                self._json({"colunas": colunas, "linhas": linhas})
-            elif url.path == "/api/estrutura":
-                schema = query.get("schema", [""])[0]
-                tabela = query.get("tabela", [""])[0]
-                colunas, linhas = chamar("sp_estrutura_relacionados", schema, tabela)
+                colunas, linhas = call("sp_colunas_tabela", schema, tabela)
                 self._json({"colunas": colunas, "linhas": linhas})
             else:
                 self._json({"erro": "rota nao encontrada"}, 404)
