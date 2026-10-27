@@ -1,6 +1,6 @@
 # Stored procedures do Simulador SGBD
 
-Documentação detalhada das 3 stored procedures definidas em `procedures.sql`.
+Documentação detalhada das 5 stored procedures definidas em `procedures.sql`.
 Todas leem o `information_schema` do MySQL (o catálogo de metadados) e fazem
 apenas `SELECT`: não alteram dados nem usam SQL dinâmico.
 
@@ -11,8 +11,10 @@ apenas `SELECT`: não alteram dados nem usam SQL dinâmico.
 3. [sp_listar_schemas](#1-sp_listar_schemas)
 4. [sp_listar_tabelas](#2-sp_listar_tabelas)
 5. [sp_colunas_tabela](#3-sp_colunas_tabela)
-6. [Como o Python chama as procedures](#como-o-python-chama-as-procedures)
-7. [Limitações e observações](#limitações-e-observações)
+6. [sp_cardinalidade](#4-sp_cardinalidade)
+7. [sp_estrutura_relacionados](#5-sp_estrutura_relacionados)
+8. [Como o Python chama as procedures](#como-o-python-chama-as-procedures)
+9. [Limitações e observações](#limitações-e-observações)
 
 ---
 
@@ -44,6 +46,8 @@ conflito com nomes de colunas do `information_schema`, que têm nomes parecidos
 | `SCHEMATA` | Um registro por banco de dados (schema). |
 | `TABLES` | Um registro por tabela ou view, com tipo e engine. |
 | `COLUMNS` | Um registro por coluna de cada tabela. |
+| `KEY_COLUMN_USAGE` | Colunas que fazem parte de chaves (PK, UK e **FK**). Nas FKs, preenche as colunas `REFERENCED_*`. |
+| `STATISTICS` | Os índices de cada tabela, um registro por coluna do índice. |
 
 ---
 
@@ -54,6 +58,8 @@ conflito com nomes de colunas do `information_schema`, que têm nomes parecidos
 | 1 | `sp_listar_schemas` | nenhum | Nomes dos bancos |
 | 2 | `sp_listar_tabelas` | `p_schema` | Tabelas do schema, com tipo e engine |
 | 3 | `sp_colunas_tabela` | `p_schema`, `p_tabela` | Colunas de uma tabela |
+| 4 | `sp_cardinalidade` | `p_schema`, `p_tabela` | FKs ligadas à tabela e a cardinalidade de cada uma |
+| 5 | `sp_estrutura_relacionados` | `p_schema`, `p_tabela` | Colunas da tabela e de todas as tabelas relacionadas |
 
 Rota HTTP de cada uma em `teste_web.py`:
 
@@ -62,6 +68,8 @@ Rota HTTP de cada uma em `teste_web.py`:
 | `sp_listar_schemas` | `/api/schemas` |
 | `sp_listar_tabelas` | `/api/tabelas?schema=` |
 | `sp_colunas_tabela` | `/api/colunas?schema=&tabela=` |
+| `sp_cardinalidade` | `/api/relacionamentos?schema=&tabela=` |
+| `sp_estrutura_relacionados` | `/api/estrutura?schema=&tabela=` |
 
 ---
 
@@ -146,7 +154,8 @@ necessário consultar `information_schema.ENGINES`.
 ### O que é engine
 É o componente do MySQL que decide como os dados da tabela são gravados,
 indexados e protegidos. O **InnoDB** (padrão) suporta transações e chaves
-estrangeiras. Já o **MyISAM** aceita a sintaxe de FK, mas a ignora.
+estrangeiras. Já o **MyISAM** aceita a sintaxe de FK, mas a ignora. Por isso,
+tabelas MyISAM não aparecem com relacionamentos no simulador.
 
 ### Exemplo
 
@@ -176,8 +185,8 @@ leitura extra do catálogo e deixaria a procedure mais confusa.
 
 ## 3. `sp_colunas_tabela`
 
-**Objetivo:** mostrar a estrutura (colunas) de uma tabela. É chamada quando o
-usuário expande uma tabela na página.
+**Objetivo:** mostrar a estrutura (colunas) de uma tabela. É usada para a
+tabela escolhida e para cada tabela relacionada.
 
 **Assinatura:** `sp_colunas_tabela(IN p_schema VARCHAR(64), IN p_tabela VARCHAR(64))`
 
@@ -228,12 +237,215 @@ CALL sp_colunas_tabela('sakila', 'film');
 
 ---
 
+## 4. `sp_cardinalidade`
+
+**Objetivo:** listar todas as chaves estrangeiras que envolvem a tabela
+escolhida, nos dois sentidos, e classificar cada relacionamento como **1:1**
+ou **1:N**. É a procedure central do projeto e a que dá origem aos blocos
+coloridos da página.
+
+**Assinatura:** `sp_cardinalidade(IN p_schema VARCHAR(64), IN p_tabela VARCHAR(64))`
+
+### Ideia central
+- A tabela que **contém a FK** fica no **lado N**.
+- A tabela **referenciada** fica no **lado 1**.
+- Se a coluna da FK for **única**, o relacionamento é **1:1**. Caso contrário, é **1:N**.
+
+### Código
+
+```sql
+SELECT CONCAT(k.TABLE_SCHEMA, '.', k.TABLE_NAME)  AS lado_n,
+       k.COLUMN_NAME                              AS coluna_n,
+       CONCAT(k.REFERENCED_TABLE_SCHEMA, '.', k.REFERENCED_TABLE_NAME) AS lado_1,
+       k.REFERENCED_COLUMN_NAME                   AS coluna_1,
+       CASE WHEN EXISTS (
+                SELECT 1
+                FROM information_schema.STATISTICS s
+                WHERE s.TABLE_SCHEMA = k.TABLE_SCHEMA
+                  AND s.TABLE_NAME = k.TABLE_NAME
+                  AND s.NON_UNIQUE = 0
+                  AND s.INDEX_NAME IN (
+                      SELECT INDEX_NAME FROM information_schema.STATISTICS
+                      WHERE TABLE_SCHEMA = k.TABLE_SCHEMA AND TABLE_NAME = k.TABLE_NAME
+                      GROUP BY INDEX_NAME HAVING COUNT(*) = 1)
+                  AND s.COLUMN_NAME = k.COLUMN_NAME)
+            THEN '1:1' ELSE '1:N' END             AS cardinalidade,
+       k.CONSTRAINT_NAME                          AS constraint_fk,
+       CASE WHEN k.TABLE_SCHEMA = p_schema AND k.TABLE_NAME = p_tabela
+            THEN 'a tabela escolhida esta no lado N'
+            ELSE 'a tabela escolhida esta no lado 1' END AS posicao
+FROM information_schema.KEY_COLUMN_USAGE k
+WHERE k.REFERENCED_TABLE_NAME IS NOT NULL
+  AND ((k.TABLE_SCHEMA = p_schema AND k.TABLE_NAME = p_tabela)
+    OR (k.REFERENCED_TABLE_SCHEMA = p_schema AND k.REFERENCED_TABLE_NAME = p_tabela))
+ORDER BY posicao DESC, lado_n, k.CONSTRAINT_NAME, k.ORDINAL_POSITION;
+```
+
+### Passo a passo
+
+**1. Localizar as FKs (`FROM` e `WHERE`)**
+`KEY_COLUMN_USAGE` guarda todas as colunas que participam de chaves. Quando
+`REFERENCED_TABLE_NAME IS NOT NULL`, a linha é uma **FK**. O filtro pega dois grupos:
+
+| Condição | Significado |
+|---|---|
+| `k.TABLE_* = p_schema/p_tabela` | FKs que **saem** da tabela escolhida (ela é o lado N) |
+| `k.REFERENCED_TABLE_* = p_schema/p_tabela` | FKs de outras tabelas que **apontam para** a escolhida (ela é o lado 1) |
+
+**2. Montar os nomes (`CONCAT`)**
+`lado_n` e `lado_1` saem no formato `schema.tabela`. O front-end separa esse
+texto no primeiro ponto para buscar a estrutura das tabelas relacionadas.
+
+**3. Decidir 1:1 ou 1:N (`CASE WHEN EXISTS`)**
+A subconsulta verifica se a coluna da FK é coberta por um índice único de
+**uma só coluna**:
+
+- `s.NON_UNIQUE = 0` seleciona apenas índices únicos (inclui a PK).
+- A subconsulta interna com `GROUP BY INDEX_NAME HAVING COUNT(*) = 1` mantém só os índices com uma única coluna.
+- `s.COLUMN_NAME = k.COLUMN_NAME` exige que o índice seja sobre a própria coluna da FK.
+- Se existir, a coluna não repete valores, então cada linha do lado 1 se liga a no máximo uma do lado N: **1:1**. Se não, **1:N**.
+
+**4. Indicar a posição (`CASE` final)**
+A coluna `posicao` diz de que lado está a tabela escolhida. O front-end usa
+esses dois textos exatos para separar os blocos laranja (lado N) e azul
+(lado 1). Alterar a redação aqui quebra a página.
+
+**5. Ordenar**
+`ORDER BY posicao DESC` coloca "lado N" antes de "lado 1" (ordem alfabética
+decrescente). Depois ordena por tabela, constraint e posição da coluna na FK.
+
+### Saída
+
+| Coluna | Descrição |
+|---|---|
+| `lado_n` | `schema.tabela` que contém a FK |
+| `coluna_n` | Coluna da FK |
+| `lado_1` | `schema.tabela` referenciada |
+| `coluna_1` | Coluna referenciada (geralmente a PK) |
+| `cardinalidade` | `1:1` ou `1:N` |
+| `constraint_fk` | Nome da constraint |
+| `posicao` | De que lado a tabela escolhida está |
+
+### Exemplo
+
+```sql
+CALL sp_cardinalidade('sakila', 'film');
+```
+
+| lado_n | coluna_n | lado_1 | coluna_1 | cardinalidade | constraint_fk | posicao |
+|---|---|---|---|---|---|---|
+| sakila.film | language_id | sakila.language | language_id | 1:N | fk_film_language | a tabela escolhida esta no lado N |
+| sakila.film_actor | film_id | sakila.film | film_id | 1:N | fk_film_actor_film | a tabela escolhida esta no lado 1 |
+
+### Observações
+- Para uma FK **composta** (várias colunas), cada coluna gera uma linha. Como o índice único tem mais de uma coluna, a procedure a classifica como 1:N.
+- Se a coluna da FK for também a PK da tabela (caso típico de tabela de extensão 1:1), ela é detectada como 1:1.
+- Auto-relacionamentos (a tabela referencia a si mesma) aparecem como lado N, pela ordem das condições do `CASE`.
+- Só FKs reais (InnoDB) são encontradas.
+
+---
+
+## 5. `sp_estrutura_relacionados`
+
+**Objetivo:** devolver, em uma única consulta, as colunas da tabela escolhida
+e das tabelas ligadas a ela por FK, em ambos os sentidos, identificando o
+papel de cada uma.
+
+**Assinatura:** `sp_estrutura_relacionados(IN p_schema VARCHAR(64), IN p_tabela VARCHAR(64))`
+
+### Código
+
+```sql
+SELECT rel.papel,
+       c.TABLE_NAME AS tabela,
+       c.ORDINAL_POSITION AS posicao,
+       c.COLUMN_NAME AS coluna,
+       c.COLUMN_TYPE AS tipo,
+       c.IS_NULLABLE AS aceita_nulo,
+       c.COLUMN_KEY AS chave,
+       c.COLUMN_DEFAULT AS valor_padrao,
+       c.EXTRA AS extra
+FROM (
+    SELECT p_schema AS sch, p_tabela AS tab, 'principal' AS papel
+
+    UNION
+
+    SELECT REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, 'referenciada'
+    FROM information_schema.KEY_COLUMN_USAGE
+    WHERE TABLE_SCHEMA = p_schema
+      AND TABLE_NAME = p_tabela
+      AND REFERENCED_TABLE_NAME IS NOT NULL
+
+    UNION
+
+    SELECT TABLE_SCHEMA, TABLE_NAME, 'referenciadora'
+    FROM information_schema.KEY_COLUMN_USAGE
+    WHERE REFERENCED_TABLE_SCHEMA = p_schema
+      AND REFERENCED_TABLE_NAME = p_tabela
+) AS rel
+JOIN information_schema.COLUMNS c
+  ON c.TABLE_SCHEMA = rel.sch
+ AND c.TABLE_NAME = rel.tab
+ORDER BY FIELD(rel.papel, 'principal', 'referenciada', 'referenciadora'),
+         c.TABLE_NAME,
+         c.ORDINAL_POSITION;
+```
+
+### Passo a passo
+
+**1. Subconsulta `rel` com três `SELECT` unidos por `UNION`**
+Monta a lista de tabelas envolvidas (`sch`, `tab`) e o papel de cada uma:
+
+| Papel | Origem | Significado |
+|---|---|---|
+| `principal` | Valor literal dos parâmetros | A tabela escolhida |
+| `referenciada` | `REFERENCED_*` das FKs que **saem** da escolhida | Tabelas que a escolhida referencia (lado 1) |
+| `referenciadora` | `TABLE_*` das FKs que **chegam** na escolhida | Tabelas que a referenciam (lado N) |
+
+O `UNION` (sem `ALL`) remove duplicatas. Uma tabela com duas FKs para a mesma
+referenciada aparece uma só vez.
+
+**2. `JOIN` com `COLUMNS`**
+Para cada par (`sch`, `tab`) de `rel`, traz todas as colunas da tabela.
+
+**3. Ordenação personalizada**
+`FIELD(rel.papel, ...)` devolve a posição do papel na lista. Isso impõe a ordem
+principal → referenciada → referenciadora, o que não seria possível com a
+ordem alfabética.
+
+### Saída
+
+| Coluna | Descrição |
+|---|---|
+| `papel` | `principal`, `referenciada` ou `referenciadora` |
+| `tabela` | Nome da tabela |
+| `posicao`, `coluna`, `tipo`, `aceita_nulo`, `chave`, `valor_padrao`, `extra` | Mesmos campos da `sp_colunas_tabela` |
+
+### Exemplo
+
+```sql
+CALL sp_estrutura_relacionados('sakila', 'film');
+```
+
+| papel | tabela | posicao | coluna | tipo | ... |
+|---|---|---|---|---|---|
+| principal | film | 1 | film_id | smallint unsigned | ... |
+| principal | film | 2 | title | varchar(128) | ... |
+| referenciada | language | 1 | language_id | tinyint unsigned | ... |
+| referenciadora | film_actor | 1 | actor_id | smallint unsigned | ... |
+
+### Observações
+- O `UNION` entre um valor literal e consultas ao `information_schema` pode gerar avisos de collation em alguns servidores. Em ambientes com collations diferentes, vale conferir.
+- A página atual **não usa** essa procedure: ela monta a mesma informação com várias chamadas a `sp_colunas_tabela`. A rota `/api/estrutura` existe, mas fica sem consumidor no front-end.
+
+---
+
 ## Como o Python chama as procedures
 
-A função `call` em `teste_web.py` é o único ponto de contato com o banco:
+A função `chamar` em `teste_web.py` é o único ponto de contato com o banco:
 
 ```python
-def call(procedure, *args):
+def chamar(procedure, *args):
     conn = mysql.connector.connect(**CONFIG)
     try:
         cursor = conn.cursor()
@@ -265,3 +477,7 @@ def call(procedure, *args):
 | Segurança | Só `SELECT`; parâmetros passados como valores, sem concatenação. Isso protege contra SQL injection. |
 | Permissões | O usuário da aplicação só precisa de `EXECUTE` nas procedures. |
 | Escopo do `information_schema` | O MySQL só mostra objetos sobre os quais o usuário tem algum privilégio. |
+| FKs compostas | Cada coluna gera uma linha e a cardinalidade é sempre 1:N. |
+| Engines sem FK | Tabelas MyISAM não têm relacionamentos detectáveis. |
+| Rota sem uso | `/api/estrutura` (`sp_estrutura_relacionados`) não é consumida pela página. |
+| Acoplamento | O front-end depende dos textos exatos da coluna `posicao` de `sp_cardinalidade`. |
